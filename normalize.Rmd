@@ -1,0 +1,233 @@
+---
+title: "normalization"
+author: "Stephen Wandro"
+date: "5/20/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(biomformat)
+library(Matrix)
+library(dplyr)
+require(limma)
+require(edgeR)
+require(dplyr)
+require(snm)
+require(doMC)
+require(tibble)
+require(gbm)
+```
+
+
+# Import data
+```{r}
+#Metadata
+md <- read.delim("merged_perSample.txt")
+
+#Make general disease type
+md$disease_type <- as.character(md$disease_type)
+md$disease_type2 <- md$disease_type
+md$disease_type2[md$disease_type2 == "Lung Adenocarcinoma"] <- "LC"
+md$disease_type2[md$disease_type2 == "Lung Squamous Cell Carcinoma"] <- "LC"
+md$disease_type2[md$disease_type2 == "NSCLC Sarcomatoid"] <- "LC"
+md$disease_type2[md$disease_type2 == "nsclc NOS"] <- "LC"
+md$disease_type2[md$disease_type2 == "Prostate Cancer"] <- "PC"
+md$disease_type2[md$disease_type2 == "Skin Cutaneous Melanoma"] <- "SC"
+md$disease_type2 <- factor(md$disease_type2)
+
+#Decontaminated biom table
+filt.genus.bt <- read_biom("data/profile/filtered/genus_decontam.biom")
+filt.genus.df <- biom_data(filt.genus.bt) %>% t()
+
+#Zebra filtered table
+filt.genus.zeb.bt <- read_biom("data/profile/zebra_01/SHOGUN_wol_zebra_merged_profile_fixed_genus.biom")
+filt.genus.zeb.df <- biom_data(filt.genus.zeb.bt) %>% t()
+
+#Import  uniref
+uniref.strat.df <- read.delim("data/genus_strat_taxfunc/filtered/uniref_filtered.tsv") %>% t()
+
+
+#Convert sample names of zebra data
+map = setNames(md$anonymized_name,md$sample_name)
+rownames(filt.genus.zeb.df) <- map[rownames(filt.genus.zeb.df)] %>% unname() %>% as.character()
+
+#Reorder
+md <- md[order(md$anonymized_name),]
+filt.genus.df <- filt.genus.df[order(rownames(filt.genus.df)),]
+filt.genus.zeb.df <- filt.genus.zeb.df[order(rownames(filt.genus.zeb.df)),]
+uniref.strat.df <- uniref.strat.df[order(rownames(uniref.strat.df)),]
+#filt.uniref.df <- filt.uniref.df[order(rownames(filt.uniref.df)),]
+
+#Unstratify uniref
+uniref.df <- uniref.strat.df
+temp_f <- function(x){strsplit(x,"\\|") %>% unlist() %>% last()}
+all.cols <- colnames(uniref.df) %>% sapply(temp_f) %>% unname()
+colnames(uniref.df) <- all.cols
+uniref.df <- t(rowsum(t(uniref.df), group = colnames(uniref.df), na.rm = T))
+
+
+#Confirm same order
+stopifnot(all(md$anonymized_name == rownames(filt.genus.df)))
+stopifnot(all(md$anonymized_name == rownames(filt.genus.zeb.df)))
+stopifnot(all(md$anonymized_name == rownames(uniref.strat.df)))
+stopifnot(all(md$anonymized_name == rownames(uniref.df)))
+#stopifnot(all(md$anonymized_name == rownames(filt.uniref.df)))
+
+#Import funcitonal profile
+#func.df.list <- list()
+#in.dir <- "/Users/swandro/Documents/Projects/plasma_microbiome/cancer_prediction/data/genus_strat_taxfunc/filtered/"
+#file.list <- list.files(path=in.dir, pattern = ".tsv")
+#for (file in file.list){
+#  temp.df <- read.delim(paste(in.dir,file,sep=''), sep = '\t') %>% t()
+#  temp.df <- temp.df[order(rownames(temp.df)),]
+#  func.df.list[[file]] <- temp.df
+#}
+
+
+
+
+
+
+```
+
+
+# Run voom
+```{r}
+#Filter only non-control samples
+samples_keep <- subset(md, baseline_plasma_and_serum =="plasma" & !host_age%in%c("not provided","not applicable"))$anonymized_name %>% as.character()
+#Filter and format metadata
+md.ss <- subset(md, anonymized_name%in%samples_keep)
+md.ss$host_age <- md.ss$host_age %>% as.character() %>% as.numeric()
+md.ss$sex <- droplevels(md.ss$sex)
+md.ss$disease_type2 <- droplevels(md.ss$disease_type2)
+
+#Filter and format data
+filter.samples <- function(df, samples_keep){
+  return(df[rownames(df)%in%samples_keep, ] %>% t())
+}
+
+filt.genus.df.ss <- filter.samples(filt.genus.df,samples_keep)
+filt.genus.zeb.df.ss <- filter.samples(filt.genus.zeb.df,samples_keep)
+uniref.df.ss <- filter.samples(uniref.df,samples_keep)
+uniref.strat.df.ss <- filter.samples(uniref.strat.df,samples_keep)
+
+
+#Drop empty taxa
+drop.empty.taxa <- function(df){
+  return(df[apply(df, 1, sum) > 0,])
+}
+
+filt.genus.df.ss <- drop.empty.taxa(filt.genus.df.ss)
+filt.genus.zeb.df.ss <- drop.empty.taxa(filt.genus.zeb.df.ss)
+uniref.df.ss <- drop.empty.taxa(uniref.df.ss)
+uniref.strat.df.ss <- drop.empty.taxa(uniref.strat.df.ss)
+
+covDesignNorm <- model.matrix(~0 + disease_type2 +
+                                  host_age + # host_age should be numeric
+                                  sex, # sex should be a factor
+                                data = md.ss)
+
+run.voom <- function(df, covDesignNorm){
+  dge.temp <-  DGEList(counts = df)
+  vdge.temp <- voom(dge.temp, design = covDesignNorm, plot = TRUE, save.plot = TRUE, 
+                                            normalize.method="quantile")
+  return(vdge.temp)
+}
+
+vdge <- run.voom(filt.genus.df.ss,covDesignNorm)
+vdge.zebra <- run.voom(filt.genus.zeb.df.ss,covDesignNorm)
+vdge.uniref.strat <- run.voom(uniref.strat.df.ss,covDesignNorm)
+vdge.uniref <- run.voom(uniref.df.ss,covDesignNorm)
+
+#dge <- DGEList(counts = filt.genus.df.ss)
+#vdge <<- voom(dge, design = covDesignNorm, plot = TRUE, save.plot = TRUE, 
+#                                            normalize.method="quantile")
+
+#dge.zeb <- DGEList(counts = filt.genus.zeb.df.ss)
+#vdge.zeb <<- voom(dge.zeb, design = covDesignNorm, plot = TRUE, save.plot = TRUE, 
+  #                                          normalize.method="quantile")
+
+#Run Voom on uniref profile. The other levels do not have enough values to work
+  #Filter
+#name <- "uniref_filtered.tsv"
+#temp <- func.df.list[[name]]
+#temp <- temp[rownames(temp)%in%samples_keep, ]
+#Transpose
+#temp <- t(temp)
+#Drop empty observations
+##temp <- temp[apply(temp, 1, sum) > 0,]
+##dge.2 <- DGEList(counts = temp)
+#vdge.2 <- voom(dge.2, design = covDesignNorm, plot = TRUE, save.plot = TRUE, 
+#                                            normalize.method="quantile")
+#voom.output.list[[name]] <- vdge.2
+
+```
+
+# Run snm
+```{r}
+bio.var <- model.matrix(~disease_type,
+                          data=md.ss)
+adj.var <- model.matrix(~host_age +
+                              sex,
+                            data=md.ss)
+
+run.snm <- function(voom.output, bio.var, adj.var){
+  return(
+    snm(raw.dat = voom.output$E, 
+                        bio.var = bio.var,
+                        adj.var = adj.var,
+                        rm.adj=TRUE,
+                        verbose = TRUE,
+                        diagnose = TRUE)
+    )
+  
+}
+
+#Run SNM
+snmDataObjOnly <- run.snm(vdge, bio.var, adj.var)
+snmDataObjOnly.zeb <- run.snm(vdge.zebra, bio.var, adj.var)
+snmDataObjOnly.uniref <- run.snm(vdge.uniref, bio.var, adj.var)
+snmDataObjOnly.uniref.strat <- run.snm(vdge.uniref.strat, bio.var, adj.var)
+
+
+make.table <- function(voom.output, snm.output){
+  sample_names <- rownames(voom.output$targets)
+  snmData <<- t(snm.output$norm.dat)
+  rownames(snmData) <- sample_names
+  return(snmData)
+}
+
+genus.final <- make.table(vdge, snmDataObjOnly)
+zebra.final <- make.table(vdge.zebra, snmDataObjOnly.zeb)
+uniref.final <- make.table(vdge.uniref, snmDataObjOnly.uniref)
+uniref.strat.final <- make.table(vdge.uniref.strat, snmDataObjOnly.uniref.strat)
+
+
+#Write output
+#Convert to biom
+genus.final.bt <- make_biom(t(genus.final))
+zenra.final.bt <- make_biom(t(zebra.final))
+uniref.final.bt <- make_biom(t(uniref.final))
+uniref.strat.final.bt <- make_biom(t(uniref.strat.final))
+
+#save biom and table
+write_biom(genus.final.bt, "/Users/swandro/Documents/Projects/plasma_microbiome/cancer_prediction/data/profile/filtered/genus_decontam_snm.biom")
+write.table(genus.final, file = "/Users/swandro/Documents/Projects/plasma_microbiome/cancer_prediction/data/profile/filtered/genus_decontam_snm.tsv",sep = '\t')
+
+write_biom(zenra.final.bt, "/Users/swandro/Documents/Projects/plasma_microbiome/cancer_prediction/data/profile/zebra_01/zebra_genus_voom_snm.biom")
+write.table(zebra.final, file = "/Users/swandro/Documents/Projects/plasma_microbiome/cancer_prediction/data/profile/filtered/zebra_genus_voom_snm.tsv",sep = '\t')
+
+write_biom(uniref.final.bt, "/Users/swandro/Documents/Projects/plasma_microbiome/cancer_prediction/data/genus_strat_taxfunc/filtered_normalized/uniref_voom_snm.biom")
+write.table(uniref.final, file = "/Users/swandro/Documents/Projects/plasma_microbiome/cancer_prediction/data/genus_strat_taxfunc/filtered_normalized/uniref_voom_snm.tsv",sep = '\t')
+
+write_biom(uniref.strat.final.bt, "/Users/swandro/Documents/Projects/plasma_microbiome/cancer_prediction/data/genus_strat_taxfunc/filtered_normalized/uniref_strat_voom_snm.biom")
+write.table(uniref.strat.final, file = "/Users/swandro/Documents/Projects/plasma_microbiome/cancer_prediction/data/genus_strat_taxfunc/filtered_normalized/uniref_strat_voom_snm.tsv",sep = '\t')
+
+```
+
+
+

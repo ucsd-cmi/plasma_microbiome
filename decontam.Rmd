@@ -1,0 +1,139 @@
+---
+title: "decontam"
+author: "Stephen Wandro"
+date: "5/20/2020"
+output: html_document
+---
+
+```{r}
+library(decontam)
+library(biomformat)
+library(Matrix)
+library(dplyr)
+```
+
+
+# Import data
+```{r}
+genus.bt = read_biom("data/profile/genus.biom")
+#Convert to df
+genus.df <- biom_data(genus.bt) %>% t()
+#Remove "_bt2_wol_alignment" from sample names
+fix_names <- function(name){
+  #Fix names in biom to match metadata anonymized_name
+  sub(x=name, pattern="_bt2_wol_alignment",replacement="") %>% 
+    strsplit(split="_") %>% 
+    unlist() %>% 
+    first() %>% 
+    sub(pattern="-",replacement="_")}
+rownames(genus.df) <- sapply(X=rownames(genus.df), FUN= fix_names) %>% unname()
+
+#Import metadata
+md <- read.delim("merged_perSample.txt")
+
+#Reorder
+md <- md[order(md$anonymized_name),]
+genus.df <- genus.df[order(rownames(genus.df)),]
+
+#Confirm same order
+stopifnot(all(md$anonymized_name == rownames(genus.df)))
+```
+
+
+# Run Decontam
+```{r}
+#Remove samples with conc < 0 because data is not usable for decontam
+samples_keep <- subset(md, well_conc > 0)$anonymized_name %>% as.character()
+md.ss <- subset(md, anonymized_name%in%samples_keep)
+genus.df.ss <- genus.df[rownames(genus.df)%in%samples_keep,]
+#Check to make sure order is the same
+stopifnot(all(md.ss$anonymized_name == rownames(genus.df.ss)))
+#Get list of blank samples
+control.types <- c("control empty well","control blank DNA extraction","control blank DNA extraction")
+is.neg <- sapply(md$baseline_plasma_and_serum, FUN=function(x){x%in%control.types}) %>% unname()
+
+#Run decontam
+#Run frequency on table without samples with 0 DNA concentration
+freq.contam.results <- isContaminant(as.matrix(genus.df.ss), method="frequency", conc=md.ss$well_conc, threshold=0.5)
+#Run prevalence on fill table
+prev.contam.results <- isContaminant(as.matrix(genus.df), method="prevalence", neg=is.neg, threshold=0.5)
+
+#Get list of noncontaminat genera
+all_genera <- unique(colnames(genus.df))
+vib_genera <- grep("vibrio$",all_genera, value = TRUE)
+frequency_contaminant_genera <- subset(freq.contam.results, contaminant==TRUE) %>% rownames()
+prevalence_contaminant_genera <- subset(prev.contam.results, contaminant==TRUE) %>% rownames()
+contaminant_genera <- union(frequency_contaminant_genera,prevalence_contaminant_genera) %>% union(vib_genera)
+non_contaminant_genera <- all_genera[!all_genera%in%contaminant_genera]
+
+print("Contaminants:")
+print(length(contaminant_genera))
+print(contaminant_genera)
+print("non-contaminants:")
+print(length(non_contaminant_genera))
+```
+
+# Filter biom
+```{r}
+
+#Write lists of genera
+write(non_contaminant_genera, "data/non_contaminant_genera.txt")
+write(contaminant_genera, "data/contaminant_genera.txt")
+
+#Filter matrix
+genera.ss <- colnames(genus.df)%in%non_contaminant_genera
+filtered.genus.df <- genus.df[,genera.ss]
+
+#Convert to biom
+filtered.genus.bt <- make_biom(t(filtered.genus.df))
+#save biom
+write_biom(filtered.genus.bt, "data/profile/filtered/genus_decontam.biom")
+```
+
+# Filter contaminant genera from taxafunc
+
+Importing taxfunc bioms because some bioms in taxfunc are not able to be opened by read_biom for some reason
+```{bash}
+source ~/.bash_profile
+conda activate qiime2
+
+for file in data/genus_strat_taxfunc/*.biom
+  do
+    biom convert --to-tsv -i $file -o temp.tsv
+    tail -n +2 temp.tsv > ${file%biom}tsv
+    rm temp.tsv
+  done
+```
+
+
+# Filter contaminant genera from taxafunc
+```{r}
+files <- dir(path="data/genus_strat_taxfunc/", pattern="tsv")
+for (file in files){
+  taxfunc.df = read.delim( paste("data/genus_strat_taxfunc/", file, sep = ''), sep='\t', row.names = 1, check.names = F)
+  
+  colnames(taxfunc.df) <- sapply(X=colnames(taxfunc.df), FUN= fix_names) %>% unname()
+  #Make list of rows to keep
+  temp_f <- function(x){strsplit(x,"\\|") %>% unlist() %>% first()}
+  taxfunc.rows <- rownames(taxfunc.df) %>% sapply(temp_f) %>% unname()
+  rows.keep <- taxfunc.rows%in%non_contaminant_genera
+  
+  #Filter rows from contaminant taxa
+  taxfunc.df.filt <- taxfunc.df[rows.keep,]
+  
+  #Save new table
+  out_name=sub(x = file, pattern = ".tsv", replacement = "_filtered.tsv")
+  write.table(x = taxfunc.df.filt, file=paste("data/genus_strat_taxfunc/filtered/", out_name, sep=''),sep = '\t')
+  #Convert to biom
+  taxfunc.bt.filt <- make_biom(taxfunc.df.filt)
+  
+  #save biom
+  out_name=sub(x = file, pattern = ".tsv", replacement = "_filtered.biom")
+  write_biom(taxfunc.bt.filt, paste("data/genus_strat_taxfunc/filtered/", out_name, sep=''))
+}
+```
+
+
+
+
+
