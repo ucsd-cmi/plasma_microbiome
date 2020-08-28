@@ -40,10 +40,12 @@ require(svglite)
 
 # Import data
 ```{r}
-snmData <- read.delim("/Users/swandro/Documents/Projects/plasma_microbiome/cancer_prediction/data/profile/filtered/genus_decontam_snm.tsv", sep='\t')
-uniref.snmData <- read.delim("/Users/swandro/Documents/Projects/plasma_microbiome/cancer_prediction/data/genus_strat_taxfunc/filtered_normalized/uniref_decontam_snm.tsv", sep='\t')
+setwd("~/Documents/Projects/plasma_microbiome/cancer_prediction/")
 
-zeb.snmData <- read.delim("/Users/swandro/Documents/Projects/plasma_microbiome/cancer_prediction/data/profile/filtered/zebra_genus_voom_snm.tsv", sep='\t')
+genus.data <- read.delim("/Users/swandro/Documents/Projects/plasma_microbiome/cancer_prediction/data/profile/filtered/genus_decontam_snm.tsv", sep='\t')
+uniref.data <- read.delim("/Users/swandro/Documents/Projects/plasma_microbiome/cancer_prediction/data/genus_strat_taxfunc/filtered_normalized/uniref_voom_snm.tsv", sep='\t')
+uniref.strat.Data <- read.delim("/Users/swandro/Documents/Projects/plasma_microbiome/cancer_prediction/data/genus_strat_taxfunc/filtered_normalized/uniref_strat_voom_snm.tsv", sep='\t')
+zeb.data <- read.delim("/Users/swandro/Documents/Projects/plasma_microbiome/cancer_prediction/data/profile/filtered/zebra_genus_voom_snm.tsv", sep='\t')
 
 md <- read.delim("merged_perSample.txt")
 md$disease_type <- as.character(md$disease_type)
@@ -151,7 +153,7 @@ tmp <- metaData
   
   perfAll <- do.call(rbind, perf)
   
-  write.csv(perfAll, file = paste0("perfAll__iter",iterSizeBootstrap,"__",fileName,".csv"))
+  write.csv(perfAll, file = paste0("perfAll_",iterSizeBootstrap,"_",fileName,".csv"))
   print(perfAll)
   
   aucrocCI <- ci(perfAll$aucroc)
@@ -216,15 +218,15 @@ Recreating Greg's analysis
 md.cancer <- droplevels(md[(md$cancer_status %in% c("Cancer", "not provided")),])
 
 md.samples <- md.cancer$anonymized_name %>% as.character()
-dat.samples <- rownames(snmData)
+dat.samples <- rownames(genus.data)
 samples.keep <- intersect(md.samples, dat.samples)
 
-cancer.snm.data <- snmData[rownames(snmData)%in%samples.keep,]
+cancer.data <- genus.data[rownames(genus.data)%in%samples.keep,]
 md.cancer <- md.cancer[md.cancer$anonymized_name%in%samples.keep,]
 
-dim(cancer.snm.data)[1] == dim(md.cancer)[1]
+dim(cancer.data)[1] == dim(md.cancer)[1]
 
-bootstrapPerf(metaData = md.cancer, snmData = cancer.snm.data, fileName = "/Users/swandro/Documents/Projects/plasma_microbiome/cancer_prediction/ml/healthy_vs_cancer")
+bootstrapPerf(metaData = md.cancer, snmData = cancer.data, fileName = "h_vs_c")
 ```
 
 
@@ -235,14 +237,51 @@ bootstrapPerf(metaData = md.cancer, snmData = cancer.snm.data, fileName = "/User
 md.cancer <- droplevels(md[(md$cancer_status %in% c("Cancer", "not provided")),])
 
 md.samples <- md.cancer$anonymized_name %>% as.character()
-dat.samples <- rownames(snmData)
+dat.samples <- rownames(uniref.data)
 samples.keep <- intersect(md.samples, dat.samples)
 
-cancer.uniref.snm.data <- uniref.snmData[rownames(uniref.snmData)%in%samples.keep,]
+cancer.data <- uniref.data[rownames(uniref.data)%in%samples.keep,]
 md.cancer <- md.cancer[md.cancer$anonymized_name%in%samples.keep,]
 
-dim(cancer.uniref.snm.data)[1] == dim(md.cancer)[1]
+dim(uniref.data)[1] == dim(md.cancer)[1]
 
-bootstrapPerf(metaData = md.cancer, snmData = cancer.snm.data, fileName = "uniref_healthy_vs_cancer")
+bootstrapPerf(metaData = md.cancer, snmData = uniref.data, fileName = "uniref_h_vs_c")
+```
+
+# Genus stratified niref profile, cancer vs healthy
+```{r}
+
+#Cancer vs no cancer
+md.cancer <- droplevels(md[(md$cancer_status %in% c("Cancer", "not provided")),])
+
+md.samples <- md.cancer$anonymized_name %>% as.character()
+dat.samples <- rownames(uniref.strat.Data)
+samples.keep <- intersect(md.samples, dat.samples)
+
+cancer.data <- uniref.strat.Data[rownames(uniref.strat.Data)%in%samples.keep,]
+md.cancer <- md.cancer[md.cancer$anonymized_name%in%samples.keep,]
+
+dim(uniref.data)[1] == dim(md.cancer)[1]
+
+bootstrapPerf(metaData = md.cancer, snmData = uniref.strat.Data+, fileName = "Gstrat_uniref_h_vs_c")
+```
+
+
+# Zebrad Genus profile, cancer vs healthy
+```{r}
+
+#Cancer vs no cancer
+md.cancer <- droplevels(md[(md$cancer_status %in% c("Cancer", "not provided")),])
+
+md.samples <- md.cancer$anonymized_name %>% as.character()
+dat.samples <- rownames(zeb.data)
+samples.keep <- intersect(md.samples, dat.samples)
+
+cancer.data <- zeb.data[rownames(zeb.data)%in%samples.keep,]
+md.cancer <- md.cancer[md.cancer$anonymized_name%in%samples.keep,]
+
+dim(cancer.data)[1] == dim(md.cancer)[1]
+
+bootstrapPerf(metaData = md.cancer, snmData = zeb.data, fileName = "zebra_h_vs_c")
 ```
 
